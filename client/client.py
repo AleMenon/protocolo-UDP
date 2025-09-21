@@ -2,6 +2,10 @@ import random
 import socket
 import struct
 import zlib
+import os
+import sys
+import platform
+import subprocess
 from pathlib import Path
 
 IP_ADDRESS = "localhost"
@@ -11,87 +15,141 @@ HEADER_FORMAT = '!iI' # Deve ser o mesmo do servidor
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 PAYLOAD_SIZE = BUFFER_SIZE - HEADER_SIZE
 
-def hangle_get_request(client, command, archive, address):
-    client.sendto(f"{command} /{archive}".encode(), address)
-    print(f"Solicitação '{command}' enviada. Aguardando pacotes...")
-    
-    received_chunks = {}
-    total_chunks = -1
+def hangle_get_request(client, address, archive, packets_to_drop):
+    temp_archive = f"temp_{archive}.part"
+    final_archive = f"client_download_{archive}"
 
-    while True:
-        while True:
-            try:
-                packet, _ = client.recvfrom(BUFFER_SIZE)
+    try:
+        request = f"GET /{archive}"
+        client.sendto(request.encode(), server_address)
+        print(f"Solicitação '{request}' enviada para {server_address}. Aguardando pacotes...")
 
-                header = packet[:HEADER_SIZE]
-                data = packet[HEADER_SIZE:]
-                seq_num, checksum = struct.unpack(HEADER_FORMAT, header)
+        total_chunks = -1
+        received_seqs = set()
+        primeiro_pacote_recebido = False
 
-                if zlib.crc32(data) != checksum:
-                    print(f"Checksum inválido para o segmento {seq_num}. Descartando.")
-                    continue
+        with open(temp_archive, "wb") as f:
+            while True:
+                while True:
+                    try:
+                        packet, _ = client.recvfrom(BUFFER_SIZE)
+                        primeiro_pacote_recebido = True
+                        
+                        header = packet[:HEADER_SIZE]
+                        data = packet[HEADER_SIZE:]
+                        seq_num, checksum = struct.unpack(HEADER_FORMAT, header)
 
-                if seq_num == -1 and data.decode().startswith('ERR'):
-                    print(f"Erro recebido do servidor: {data.decode()}")
-                    return
+                        if seq_num in packets_to_drop:
+                            print(f"---! DESCARTANDO PACOTE {seq_num} (SIMULAÇÃO DE PERDA) !---")
+                            packets_to_drop.remove(seq_num)
+                            continue
+                        
+                        if zlib.crc32(data) != checksum:
+                            print(f"Checksum inválido para o segmento {seq_num}. Descartando.")
+                            continue
+
+                        if seq_num == -1 and data.decode().startswith('ERR'):
+                            print(f"Erro recebido do servidor: {data.decode()}")
+                            f.close()
+                            os.remove(temp_archive)
+                            return
+
+                        if data == b'END':
+                            total_chunks = seq_num
+                            print(f"Pacote de Fim de Transmissão (END) recebido. Total de segmentos: {total_chunks}")
+                            if total_chunks == 0:
+                                print("Arquivo vazio recebido com sucesso.")
+                                break
+                            continue
+                        
+                        if seq_num not in received_seqs:
+                            f.seek(seq_num * PAYLOAD_SIZE)
+                            f.write(data)
+                            received_seqs.add(seq_num)
+
+                            if total_chunks > 0:
+                                progress = len(received_seqs) / total_chunks * 100
+                                sys.stdout.write(f"\rProgresso: {progress:.2f}% ({len(received_seqs)}/{total_chunks})")
+                                sys.stdout.flush()
+
+                    except socket.timeout:
+                        break
                 
-                if data == b'END':
-                    total_chunks = seq_num
-                    print(f"Pacote de Fim de Transmissão (END) recebido. Total de segmentos: {total_chunks}")
+                if not primeiro_pacote_recebido:
+                    print("\nNenhuma resposta recebida do servidor. Verifique o endereço ou o status do servidor.")
+                    return
+
+                if total_chunks != -1 and len(received_seqs) == total_chunks:
+                    print("\nTodos os segmentos foram recebidos com sucesso!")
+                    client.sendto(b'ACK_SUCCESS', server_address)
+                    break
+                
+                if total_chunks == -1:
+                    print("\nPacote final (END) ainda não recebido. Aguardando mais dados...")
                     continue
 
-                if seq_num not in received_chunks:
-                    received_chunks[seq_num] = data
-            except socket.timeout:
-                break
+                expected_seqs = set(range(total_chunks))
+                missing_seqs = sorted(list(expected_seqs - received_seqs))
 
-        if total_chunks == -1:
-            print("Pacote final (END) ainda não recebido. Aguardando mais dados...")
-            continue
+                if missing_seqs:
+                    print(f"\nFaltando {len(missing_seqs)} segmentos. Solicitando retransmissão.")
+                    nack_message = f"NACK:{','.join(map(str, missing_seqs))}"
+                    client.sendto(nack_message.encode(), server_address)
+        
+        os.rename(temp_archive, final_archive)
+        print(f"Arquivo montado e salvo como: '{final_archive}'")
 
-        if len(received_chunks) == total_chunks:
-            print("Todos os segmentos foram recebidos com sucesso!")
-            client.sendto(b'ACK_SUCCESS', address)
-            break
+        open_file = input("Deseja abrir o arquivo agora? (s/n): ").lower()
+        if open_file == 's':
+            try:
+                if platform.system() == 'Darwin':
+                    subprocess.call(('open', final_archive))
+                elif platform.system() == 'Windows':    
+                    os.startfile(final_archive)
+                else:                                
+                    subprocess.call(('xdg-open', final_archive))
+            except Exception as e:
+                print(f"Não foi possível abrir o arquivo automaticamente: {e}")
 
-        expected_seqs = set(range(total_chunks))
-        received_seqs = set(received_chunks.keys())
-        missing_seqs = sorted(list(expected_seqs - received_seqs))
-
-        if missing_seqs:
-            print(f"Faltando {len(missing_seqs)} segmentos. Solicitando retransmissão...")
-            nack_message = f"NACK:{','.join(map(str, missing_seqs))}"
-            client.sendto(nack_message.encode(), address)
-
-    output_archive = f"client_download_{archive}"
-    print(f"Montando o arquivo final: '{output_archive}'")
-    with open(output_archive, "wb") as f:
-        for i in range(total_chunks):
-            f.write(received_chunks[i])
-
+    except Exception as e:
+        print(f"Ocorreu um erro durante a transferência: {e}")
+        if os.path.exists(temp_archive):
+            os.remove(temp_archive)
 
 if __name__ == "__main__":
+    local_ip = "localhost"
     client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     client.bind((IP_ADDRESS, random.randint(8001, 9000)))
     client.settimeout(2.0)
 
     while True:
-        command = input("Digite o tipo de request (ex: GET /file.txt, exit): ")
+        command = input("Digite o comando (@IP:Porta/arquivo ou 'exit'): ")
 
-        if command.lower().startswith("get"):
-            parts = command.split()
-            if len(parts) != 2:
-                print("Formato inválido. Use: GET /nome_do_arquivo")
-                continue
-
-            archive = parts[1].strip('/')
-            hangle_get_request(client, command, archive, (IP_ADDRESS, PORT))
-                    
-        elif command.startswith("exit"):
+        if command.startswith("exit"):
             print("Encerrando o cliente.")
             break
 
-        else:
-            print("Comando inválido!")
+        if not command.startswith('@') or '/' not in command or ':' not in command:
+            print("Formato inválido. Use: @IP_Servidor:Porta_Servidor/nome_do_arquivo.ext")
+            continue
+        try:
+            address, archive = command.split('/')
+            ip_addr, port_str = address.lstrip('@').split(':')
+            port = int(port_str)
+            server_address = (ip_addr, port)
+
+            loss_input = input("Digite os números dos pacotes a descartar (separados por vírgula, ou deixe em branco): ")
+            packets_to_drop = set()
+            if loss_input:
+                try:
+                    packets_to_drop = set(int(s.strip()) for s in loss_input.split(','))
+                    print(f"Simulação ativada. Pacotes a serem descartados: {sorted(list(packets_to_drop))}")
+                except ValueError:
+                    print("Entrada inválida para descarte de pacotes. Ignorando.")
+
+            hangle_get_request(client, server_address, archive, packets_to_drop)
+
+        except ValueError:
+            print("Porta inválida. Deve ser um número.")
 
     client.close()

@@ -7,7 +7,7 @@ from pathlib import Path
 IP_ADDRESS = "localhost"
 PORT = 8000
 BUFFER_SIZE = 1024
-HEADER_FORMAT = '!iI'  # Formato do cabeçalho: Número de Sequência (I) e Checksum (I)
+HEADER_FORMAT = '!iI'
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 PAYLOAD_SIZE = BUFFER_SIZE - HEADER_SIZE
 
@@ -73,7 +73,7 @@ if __name__ == "__main__":
                 for seq_num in missing_seqs:
                     if seq_num in file_chunks:
                         packet = create_packet(seq_num, file_chunks[seq_num])
-                        server.sendto(packet, archive)
+                        server.sendto(packet, address)
                 
                 server.sendto(end_packet, address)
                 print("Segmentos de retransmissão enviados.")
