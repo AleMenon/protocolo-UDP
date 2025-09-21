@@ -15,7 +15,7 @@ HEADER_FORMAT = '!iI' # Deve ser o mesmo do servidor
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 PAYLOAD_SIZE = BUFFER_SIZE - HEADER_SIZE
 
-def hangle_get_request(client, address, archive, packets_to_drop):
+def handle_get_request(client, server_address, archive, packets_to_drop):
     temp_archive = f"temp_{archive}.part"
     final_archive = f"client_download_{archive}"
 
@@ -147,7 +147,7 @@ if __name__ == "__main__":
                 except ValueError:
                     print("Entrada inválida para descarte de pacotes. Ignorando.")
 
-            hangle_get_request(client, server_address, archive, packets_to_drop)
+            handle_get_request(client, server_address, archive, packets_to_drop)
 
         except ValueError:
             print("Porta inválida. Deve ser um número.")
