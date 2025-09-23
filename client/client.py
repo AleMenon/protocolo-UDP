@@ -8,11 +8,10 @@ import platform
 import subprocess
 
 # --- [PROTOCOLO: Definição de Constantes] ---
-# As constantes devem ser idênticas às do servidor para compatibilidade.
 IP_ADDRESS = "localhost"
 PORT = 8000
 BUFFER_SIZE = 8192
-HEADER_FORMAT = '!iI' # Deve ser o mesmo do servidor
+HEADER_FORMAT = '!iI'
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 PAYLOAD_SIZE = BUFFER_SIZE - HEADER_SIZE
 
@@ -31,23 +30,18 @@ def handle_get_request(client, server_address, archive, packets_to_drop):
         primeiro_pacote_recebido = False
 
         # [REQUISITO: Recepção e Montagem]
-        # Abre um arquivo temporário para escrever os dados diretamente no disco.
-        # Isso evita consumir memória RAM para arquivos grandes (streaming).
         with open(temp_archive, "wb") as f:
-            while True: # Loop externo que controla a lógica de retransmissão.
-                while True: # Loop interno que recebe uma rajada de pacotes.
+            while True:
+                while True:
                     try:
                         packet, _ = client.recvfrom(BUFFER_SIZE)
                         primeiro_pacote_recebido = True
                         
-                        # Desempacota o cabeçalho para obter o seq_num e o checksum.
                         header = packet[:HEADER_SIZE]
                         data = packet[HEADER_SIZE:]
                         seq_num, checksum = struct.unpack(HEADER_FORMAT, header)
 
                         # [REQUISITO: Simulação de Perda]
-                        # Ponto crucial para testes: descarta intencionalmente pacotes
-                        # para forçar e validar a lógica de retransmissão.
                         if seq_num in packets_to_drop:
                             print(f"---! DESCARTANDO PACOTE {seq_num} (SIMULAÇÃO DE PERDA) !---")
                             packets_to_drop.remove(seq_num)
@@ -76,22 +70,14 @@ def handle_get_request(client, server_address, archive, packets_to_drop):
                         
                         # [REQUISITO: Armazenar e ordenar os segmentos]
                         if seq_num not in received_seqs:
-                            # Usa f.seek() para pular para a posição correta no arquivo e
-                            # escrever o payload. Isso garante a ordem correta.
                             f.seek(seq_num * PAYLOAD_SIZE)
                             f.write(data)
                             received_seqs.add(seq_num)
 
-                            # Barra de progresso para UX.
-                            if total_chunks > 0:
-                                progress = len(received_seqs) / total_chunks * 100
-                                sys.stdout.write(f"\rProgresso: {progress:.2f}% ({len(received_seqs)}/{total_chunks})")
-                                sys.stdout.flush()
-
                     except socket.timeout:
-                        break # O timeout indica o fim de uma rajada de pacotes.
+                        break 
                 
-                # [REQUISITO: Verificação e Finalização] - Lógica pós-timeout.
+                # [REQUISITO: Verificação e Finalização]
                 if not primeiro_pacote_recebido:
                     print("\nNenhuma resposta recebida do servidor. Verifique o endereço ou o status do servidor.")
                     return
@@ -112,12 +98,9 @@ def handle_get_request(client, server_address, archive, packets_to_drop):
                 expected_seqs = set(range(total_chunks))
                 missing_seqs = sorted(list(expected_seqs - received_seqs))
 
-                # Se o pacote END não foi recebido, peça também!
                 if total_chunks == -1 or (total_chunks != -1 and len(received_seqs) < total_chunks):
-                    # Não sabemos o número do END se total_chunks == -1, então só pedimos retransmissão dos segmentos conhecidos.
                     pass
                 elif total_chunks not in received_seqs:
-                    # Adiciona o pacote END à lista de faltantes
                     missing_seqs.append(total_chunks)
 
                 # [REQUISITO: Solicitar a retransmissão]
@@ -129,27 +112,12 @@ def handle_get_request(client, server_address, archive, packets_to_drop):
         # [REQUISITO: Salvar o arquivo reconstruído localmente]
         os.rename(temp_archive, final_archive)
         print(f"Arquivo montado e salvo como: '{final_archive}'")
-        # ... (lógica para abrir o arquivo) ...
-
-        open_file = input("Deseja abrir o arquivo agora? (s/n): ").lower()
-        if open_file == 's':
-            try:
-                if platform.system() == 'Darwin':
-                    subprocess.call(('open', final_archive))
-                elif platform.system() == 'Windows':    
-                    os.startfile(final_archive)
-                else:                                
-                    subprocess.call(('xdg-open', final_archive))
-            except Exception as e:
-                print(f"Não foi possível abrir o arquivo automaticamente: {e}")
 
     except Exception as e:
-        # ... (tratamento de exceção) ...
         print(f"Ocorreu um erro durante a transferência: {e}")
         if os.path.exists(temp_archive):
             os.remove(temp_archive)
 
-# --- Lógica Principal do Cliente ---
 if __name__ == "__main__":
     local_ip = "localhost"
     client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -183,7 +151,6 @@ if __name__ == "__main__":
                 except ValueError:
                     print("Entrada inválida para descarte de pacotes. Ignorando.")
 
-            # Chama a função principal que executa o protocolo.
             handle_get_request(client, server_address, archive, packets_to_drop)
 
         except ValueError:
